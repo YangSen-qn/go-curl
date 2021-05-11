@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/ioutil"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -26,6 +27,8 @@ type http3Transport struct {
 }
 
 func (t *http3Transport) RoundTrip(request *http.Request) (response *http.Response, err error) {
+	runtime.LockOSThread()
+
 	initOnce.Do(func() {
 		err = libcurl.GlobalInit(libcurl.GLOBAL_ALL)
 	})
@@ -89,6 +92,8 @@ func (t *http3Transport) RoundTrip(request *http.Request) (response *http.Respon
 		err = easy.Setopt(libcurl.OPT_POST, 1)
 	case http.MethodPut:
 		err = easy.Setopt(libcurl.OPT_UPLOAD, 1)
+	case http.MethodHead:
+		err = easy.Setopt(libcurl.OPT_NOBODY, 1)
 	default:
 		err = easy.Setopt(libcurl.OPT_CUSTOMREQUEST, request.Method)
 	}
@@ -101,6 +106,9 @@ func (t *http3Transport) RoundTrip(request *http.Request) (response *http.Respon
 	for key, _ := range request.Header {
 		requestHeader = append(requestHeader, key+":"+request.Header.Get(key))
 	}
+	if request.Header.Get("Expect") == "" {
+		requestHeader = append(requestHeader, "Expect:")
+	}
 	err = easy.Setopt(libcurl.OPT_HTTPHEADER, requestHeader)
 	if err != nil {
 		return
@@ -108,12 +116,14 @@ func (t *http3Transport) RoundTrip(request *http.Request) (response *http.Respon
 
 	if body := request.Body; body != nil {
 		switch request.Method {
-		case http.MethodPost:
-			err = easy.Setopt(libcurl.OPT_POSTFIELDSIZE, request.ContentLength)
 		case http.MethodPut:
 			err = easy.Setopt(libcurl.OPT_INFILESIZE, request.ContentLength)
 		default:
+			err = easy.Setopt(libcurl.OPT_POSTFIELDSIZE, request.ContentLength)
 		}
+	}
+	if err != nil {
+		return
 	}
 
 	// request resolver
@@ -128,6 +138,16 @@ func (t *http3Transport) RoundTrip(request *http.Request) (response *http.Respon
 		if err != nil {
 			return
 		}
+	}
+
+	err = easy.Setopt(libcurl.OPT_TRANSFER_ENCODING, 0)
+	if err != nil {
+		return
+	}
+
+	err = easy.Setopt(libcurl.OPT_TCP_KEEPALIVE, 1)
+	if err != nil {
+		return
 	}
 
 	if t.Timeout > 0 {
